@@ -11,10 +11,16 @@ ESP32-S3とESP-IDFを使用した、8個のLEDによる残光付きランニン�
 - 停止時の全LED消灯
 - ボタン入力のチャタリング対策
 
+## Tech Stack
+
+- Language: C
+- Framework: ESP-IDF (v6.1)
+- Target MCU: ESP32-S3
+
 ## Hardware
 
 - MCU: ESP32-S3
-- Development framework: ESP-IDF v6.1
+- Development framework: ESP-IDF (v6.1)
 - LED output: GPIO 42, 41, 40, 39, 38, 47, 21, 20
 - Button input: GPIO 13
 - PWM controller: LEDC
