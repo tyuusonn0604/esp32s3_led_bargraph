@@ -1,5 +1,4 @@
 /* include */
-#include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
@@ -8,24 +7,33 @@
 #include "esp_log.h"
 
 /* define */
-#define LED_GPIO        2
-#define LED_GPIO_PORT   8
-#define BUTTON_GPIO     13
-#define HIGH            1
-#define LOW             0
-#define BUTTON_DELAY_MS 10
-#define DUTY_MAX        0xFF
-#define DUTY_STEP       16
-#define FADE_DELAY_MS   100
+#define LED_GPIO_PORT       8
+#define BUTTON_GPIO         13
+#define HIGH                1
+#define LOW                 0
+#define BUTTON_DELAY_MS     10
+#define DUTY_MAX            0xFF
+#define DUTY_PATTERN_LENGTH 16
+#define FADE_DELAY_MS       100
 
 #define LEDC_MODE         LEDC_LOW_SPEED_MODE
 #define LEDC_TIMER        LEDC_TIMER_0
 #define LEDC_DUTY_RES     LEDC_TIMER_8_BIT
 #define LEDC_FREQUENCY_HZ 5000
 
-char g_led_gpio[LED_GPIO_PORT] = {42, 41, 40, 39, 38, 47, 21, 20};
-unsigned char g_duty[DUTY_STEP] = {0, 0, 0, 0, 0, 0, 0, 0,
-                           DUTY_MAX>>0, DUTY_MAX>>1, DUTY_MAX>>2, DUTY_MAX>>3, DUTY_MAX>>4, DUTY_MAX>>5, DUTY_MAX>>6, DUTY_MAX>>7};
+gpio_num_t g_led_gpio[LED_GPIO_PORT] = {
+    GPIO_NUM_42, GPIO_NUM_41, 
+    GPIO_NUM_40, GPIO_NUM_39, 
+    GPIO_NUM_38, GPIO_NUM_47, 
+    GPIO_NUM_21, GPIO_NUM_20
+};
+unsigned char g_duty[DUTY_PATTERN_LENGTH] = {
+    0, 0, 0, 0, 0, 0, 0, 0,
+    DUTY_MAX>>0, DUTY_MAX>>1,
+    DUTY_MAX>>2, DUTY_MAX>>3, 
+    DUTY_MAX>>4, DUTY_MAX>>5, 
+    DUTY_MAX>>6, DUTY_MAX>>7
+};
 
 static const char *TAG = "pwm_fade";
 
@@ -87,14 +95,14 @@ void app_main(void)
         /* 動作中だけ、残光付きLEDパターンを更新 */
         if (running && (fade_step == 0)) {
             for (i = 0; i < LED_GPIO_PORT; i++) {
-                ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, i, (g_duty[(duty_step + i) % DUTY_STEP])));
+                ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, i, (g_duty[(duty_step + i) % DUTY_PATTERN_LENGTH])));
             }
 
             for (i = 0; i < LED_GPIO_PORT; i++) {
                 ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, i));
             }
 
-            duty_step = (duty_step + 1) % DUTY_STEP;
+            duty_step = (duty_step + 1) % DUTY_PATTERN_LENGTH;
         }
 
         fade_step = (fade_step + 1) % (FADE_DELAY_MS / BUTTON_DELAY_MS);
