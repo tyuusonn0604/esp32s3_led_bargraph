@@ -1,6 +1,7 @@
 /* include */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "esp_err.h"
@@ -21,6 +22,12 @@
 #define LEDC_DUTY_RES     LEDC_TIMER_8_BIT
 #define LEDC_FREQUENCY_HZ 5000
 
+#define DEBOUNCE_TIME_MS  30
+
+typedef enum {
+    BUTTON_EVENT_TOGGLE
+} button_event_t;
+
 gpio_num_t g_led_gpio[LED_GPIO_PORT] = {
     GPIO_NUM_42, GPIO_NUM_41, 
     GPIO_NUM_40, GPIO_NUM_39, 
@@ -37,30 +44,56 @@ unsigned char g_duty[DUTY_PATTERN_LENGTH] = {
 
 static const char *TAG = "pwm_fade";
 
+static QueueHandle_t g_button_event_queue;
+
 /* Prototype */
 void app_main(void);
+static void button_task(void *pvParameters);
+static void led_task(void *pvParameters);
 static void pwm_init(void);
 static void button_init(void);
 
 /* Function */
 void app_main(void)
 {
-    int button_raw = HIGH;
-    int button_raw_prev = HIGH;
-    int button_stable = HIGH;
-    int running = 0;
-    int duty_step = 0;
-    int fade_step = 0;
-    int i = 0;
-
-    TickType_t last_change = xTaskGetTickCount();
-
     pwm_init();
     button_init();
 
-    /* 無限ループ */
-    while(1)
-    {   
+    g_button_event_queue = xQueueCreate(4, sizeof(button_event_t));
+    configASSERT(g_button_event_queue != NULL);
+
+    BaseType_t result;
+
+    result = xTaskCreate(
+        button_task, 
+        "button_task", 
+        3072, 
+        NULL, 
+        5, 
+        NULL
+    );
+    configASSERT(result == pdPASS);
+
+    result = xTaskCreate(
+        led_task,
+        "led_task",
+        4096,
+        NULL,
+        5,
+        NULL
+    );
+    configASSERT(result == pdPASS);
+}
+
+static void button_task(void *pvParameters)
+{
+    int button_raw      = HIGH;
+    int button_raw_prev = HIGH;
+    int button_stable   = HIGH;
+
+    TickType_t last_change = xTaskGetTickCount();
+
+    while (1) {
         /* ボタン入力の読み取り */
         button_raw = gpio_get_level(BUTTON_GPIO);
 
@@ -71,44 +104,77 @@ void app_main(void)
         }
 
         /* 30ms以上安定した入力だけを採用する */
-        if (((xTaskGetTickCount() - last_change) >= pdMS_TO_TICKS(30)) && (button_raw != button_stable)) {
+        if (((xTaskGetTickCount() - last_change) >= 
+            pdMS_TO_TICKS(DEBOUNCE_TIME_MS)) && 
+            (button_raw != button_stable)) {
+            
             button_stable = button_raw;
 
-            /* 押下(HIGH -> LOW)で開始・停止を切り替える */
+            /* プルアップ入力なので、LOWが押下 */
             if (button_stable == LOW) {
+                button_event_t event = BUTTON_EVENT_TOGGLE;
+
+                /* キューが満杯ならイベントを送らず、待たない */
+                xQueueSend(g_button_event_queue, &event, 0);
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(BUTTON_DELAY_MS));
+    }
+}
+
+static void led_task(void *pvParameters)
+{
+    button_event_t event;
+    int running     = 0;
+    int duty_step   = 0;
+
+    TickType_t last_fade = xTaskGetTickCount();
+
+    while (1) {
+        /* ボタンイベントを待つ。最大10msで次の処理へ */
+        if (xQueueReceive(
+            g_button_event_queue, 
+            &event, 
+            pdMS_TO_TICKS(BUTTON_DELAY_MS)) == pdTRUE) {
+            
+            if (event == BUTTON_EVENT_TOGGLE) {
                 running = !running;
-                ESP_LOGI(TAG, "LED animation: %s", running ? "START" : "STOP");
 
-                /* 停止時は全LEDを消灯 */
+                ESP_LOGI(TAG, "LEDanimation: %s", 
+                        running ? "START" : "STOP");
+                
                 if (!running) {
-                    for (i = 0; i < LED_GPIO_PORT; i++) {
+                    for (int i = 0; i < LED_GPIO_PORT; i++) {
                         ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, i, 0));
-                    }
-
-                    for (i = 0; i < LED_GPIO_PORT; i++) {
                         ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, i));
                     }
+                }
+                else {
+                    /* 再開時はすぐに更新できるようにする */
+                    last_fade = xTaskGetTickCount();
                 }
             }
         }
 
-        /* 動作中だけ、残光付きLEDパターンを更新 */
-        if (running && (fade_step == 0)) {
-            for (i = 0; i < LED_GPIO_PORT; i++) {
-                ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, i, (g_duty[(duty_step + i) % DUTY_PATTERN_LENGTH])));
+        /* 100ms周期でアニメーションを更新 */
+        TickType_t now = xTaskGetTickCount();
+        
+        if (running && (now - last_fade >= pdMS_TO_TICKS(FADE_DELAY_MS))) {
+
+            for (int i = 0; i < LED_GPIO_PORT; i++) {
+                unsigned int duty = g_duty[(duty_step + i) % DUTY_PATTERN_LENGTH];
+
+                ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, i, duty));
             }
 
-            for (i = 0; i < LED_GPIO_PORT; i++) {
+            for (int i = 0; i < LED_GPIO_PORT; i++) {
                 ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, i));
             }
 
             duty_step = (duty_step + 1) % DUTY_PATTERN_LENGTH;
+            last_fade = now;
         }
-
-        fade_step = (fade_step + 1) % (FADE_DELAY_MS / BUTTON_DELAY_MS);
-
-        /* ボタン監視周期：約10ms */
-        vTaskDelay(pdMS_TO_TICKS(BUTTON_DELAY_MS));
     }
 }
 
